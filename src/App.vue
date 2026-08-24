@@ -9,75 +9,104 @@ const matrix = [
 ]
 
 const ROWS = 4
-const COLS = 16
 const TOTAL = 64
 
 const inputText = ref('')
+// 每局结果数组（唯一数据源）：null=空白，1=红方胜，2=蓝方胜
+const resultsArr = ref(Array(TOTAL).fill(null))
 
-const results = computed(() => {
-  const text = inputText.value.replace(/[^12]/g, '')
-  const arr = []
-  for (let i = 0; i < text.length && i < TOTAL; i++) {
-    arr.push(parseInt(text[i]))
+const BLANK_CHAR = '\u00b7' // 文本框中用 · 表示空白占位
+
+// 解析输入框内容：仅 1/2/0/· 有效，每个有效字符按顺序占用一个对局位；0 和 · 表示空白
+function parseInput(text) {
+  const cleaned = text.replace(/[^12\u00b70]/g, '')
+  const arr = Array(TOTAL).fill(null)
+  for (let i = 0; i < cleaned.length && i < TOTAL; i++) {
+    const ch = cleaned[i]
+    arr[i] = ch === '1' ? 1 : ch === '2' ? 2 : null
   }
   return arr
+}
+
+function onFieldInput(e) {
+  inputText.value = e.target.value
+  resultsArr.value = parseInput(inputText.value)
+}
+
+// 数组 => 文本框展示（截去末尾空白）
+function projectResults() {
+  let last = -1
+  for (let i = TOTAL - 1; i >= 0; i--) {
+    if (resultsArr.value[i] !== null) { last = i; break }
+  }
+  if (last === -1) return ''
+  return resultsArr.value.slice(0, last + 1)
+    .map(v => v === null ? BLANK_CHAR : String(v)).join('')
+}
+
+const inputCount = computed(() =>
+  resultsArr.value.filter(v => v !== null).length)
+
+// 已输入到的最大对局序号（中间可留空）
+const maxEntered = computed(() => {
+  for (let i = TOTAL - 1; i >= 0; i--) {
+    if (resultsArr.value[i] !== null) return i + 1
+  }
+  return 0
 })
 
-const inputCount = computed(() => results.value.length)
+// 前5局不参与连跳统计，从第6局开始
+const START_MATCH = 6
 
 function getResult(matchNum) {
-  if (matchNum < 1 || matchNum > inputCount.value) return null
-  return results.value[matchNum - 1] || null
+  if (matchNum < 1 || matchNum > TOTAL) return null
+  return resultsArr.value[matchNum - 1]
 }
 
-function getColIndex(matchNum) {
-  for (let c = 0; c < COLS; c++) {
-    for (let r = 0; r < ROWS; r++) {
-      if (matrix[r][c] === matchNum) return c
-    }
-  }
-  return -1
+// 点击单元格切换结果：空白 → 1 → 2 → 空白
+function toggleResult(matchNum) {
+  const idx = matchNum - 1
+  const cur = resultsArr.value[idx]
+  resultsArr.value[idx] = cur === null ? 1 : cur === 1 ? 2 : null
+  inputText.value = projectResults()
 }
 
-const columnStats = computed(() => {
-  const stats = Array.from({ length: COLS }, () => [])
-  const maxMatch = inputCount.value
-  if (maxMatch < 2) return stats
-  for (let i = 2; i <= maxMatch; i++) {
-    const prevResult = results.value[i - 2]
-    const curResult = results.value[i - 1]
-    if (prevResult === undefined || curResult === undefined) continue
-    const col = getColIndex(i)
-    if (col === -1) continue
-    const isSame = prevResult === curResult
-    const type = isSame ? '\u8fde' : '\u8df3'
-    stats[col].push({ type, matchNum: i })
+// 找到对局序号在矩阵中的位置 {row, col}
+function getPosition(matchNum) {
+  for (let r = 0; r < ROWS; r++) {
+    const c = matrix[r].indexOf(matchNum)
+    if (c !== -1) return { row: r, col: c }
   }
-  return stats
+  return null
+}
+
+// 按序号遍历：当前局结果与所在行左侧节点（上一列）结果一致 => 连，否则 => 跳
+const events = computed(() => {
+  const evts = []
+  for (let i = START_MATCH; i <= maxEntered.value; i++) {
+    const pos = getPosition(i)
+    if (!pos || pos.col === 0) continue
+    const cur = getResult(i)
+    const left = getResult(matrix[pos.row][pos.col - 1])
+    if (cur === null || left === null) continue
+    evts.push({ type: cur === left ? '\u8fde' : '\u8df3', matchNum: i })
+  }
+  return evts
 })
 
-const mergedStats = computed(() => {
-  return columnStats.value.map(colStats => {
-    if (colStats.length === 0) return []
-    const merged = []
-    let current = { type: colStats[0].type, count: 1 }
-    for (let i = 1; i < colStats.length; i++) {
-      if (colStats[i].type === current.type) {
-        current.count++
-      } else {
-        merged.push({ ...current })
-        current = { type: colStats[i].type, count: 1 }
-      }
+// 连续统计到同类则次数+1；一旦没有连续上（类型变化），另起一条记录
+const mergedRuns = computed(() => {
+  const runs = []
+  for (const e of events.value) {
+    const last = runs[runs.length - 1]
+    if (last && last.type === e.type) {
+      last.count++
+    } else {
+      runs.push({ type: e.type, count: 1 })
     }
-    merged.push({ ...current })
-    return merged
-  })
+  }
+  return runs
 })
-
-function getStatStyle(type) {
-  if (type === '\u8fde') return { backgroundColor: '#e74c3c', color: '#fff' }
-  return { backgroundColor: '#3498db', color: '#fff' }
-}
 
 function getResultStyle(num) {
   const r = getResult(num)
@@ -86,22 +115,22 @@ function getResultStyle(num) {
   return { backgroundColor: '#3498db', color: '#fff' }
 }
 
-function clearInput() { inputText.value = '' }
+function clearInput() {
+  resultsArr.value = Array(TOTAL).fill(null)
+  inputText.value = ''
+}
 
 function fillTestData() {
-  const data = []
-  for (let i = 0; i < TOTAL; i++) {
-    data.push(Math.random() > 0.5 ? '1' : '2')
-  }
-  inputText.value = data.join('')
+  resultsArr.value = Array.from({ length: TOTAL }, () => Math.random() > 0.5 ? 1 : 2)
+  inputText.value = projectResults()
 }
 
 const totalLian = computed(() =>
-  mergedStats.value.flat().filter(s => s.type === '\u8fde').reduce((sum, s) => sum + s.count, 0))
+  mergedRuns.value.filter(s => s.type === '\u8fde').reduce((sum, s) => sum + s.count, 0))
 const totalTiao = computed(() =>
-  mergedStats.value.flat().filter(s => s.type === '\u8df3').reduce((sum, s) => sum + s.count, 0))
-const count1 = computed(() => results.value.filter(r => r === 1).length)
-const count2 = computed(() => results.value.filter(r => r === 2).length)
+  mergedRuns.value.filter(s => s.type === '\u8df3').reduce((sum, s) => sum + s.count, 0))
+const count1 = computed(() => resultsArr.value.filter(r => r === 1).length)
+const count2 = computed(() => resultsArr.value.filter(r => r === 2).length)
 </script>
 
 <template>
@@ -114,9 +143,9 @@ const count2 = computed(() => results.value.filter(r => r === 2).length)
     <!-- 输入区域 -->
     <section class="card">
       <h2>输入对局结果</h2>
-      <p class="hint">按对局序号（1~64）顺序输入：1 = 红方胜，2 = 蓝方胜</p>
+      <p class="hint">按对局序号（1~64）顺序输入 1 / 2（0 或 · 表示该局留空），也可直接点击下方矩阵切换单元格结果</p>
       <div class="input-row">
-        <input v-model="inputText" type="text" maxlength="64"
+        <input :value="inputText" @input="onFieldInput" type="text" maxlength="64"
           placeholder="输入对局结果，如：1212212211..." class="input-field" />
         <button @click="clearInput" class="btn btn-clear">清空</button>
         <button @click="fillTestData" class="btn btn-test">测试数据</button>
@@ -132,55 +161,34 @@ const count2 = computed(() => results.value.filter(r => r === 2).length)
     <!-- 对局结果 -->
     <section class="card">
       <h2>对局结果</h2>
-      <div class="scroll-wrapper">
-        <table class="matrix-table">
-          <thead>
-            <tr>
-              <th v-for="c in COLS" :key="'h' + c" class="col-header">{{ c }}</th>
-            </tr>
-          </thead>
-          <tbody>
-            <tr v-for="(row, r) in matrix" :key="'r' + r">
-              <td v-for="(num, c) in row" :key="'c' + c"
-                class="cell" :style="getResultStyle(num)"
-                :class="{ 'has-result': getResult(num) }">
-                <span class="num">{{ num }}</span>
-                <span v-if="getResult(num)" class="result">{{ getResult(num) }}</span>
-              </td>
-            </tr>
-          </tbody>
-        </table>
-      </div>
+      <table class="matrix-table">
+        <tbody>
+          <tr v-for="(row, r) in matrix" :key="'r' + r">
+            <td v-for="(num, c) in row" :key="'c' + c"
+              class="cell" :style="getResultStyle(num)"
+              :class="{ 'has-result': getResult(num) }"
+              :title="'第 ' + num + ' 局：点击切换 空白 → 1 → 2'"
+              @click="toggleResult(num)">
+              <span class="num">{{ num }}</span>
+              <span v-if="getResult(num)" class="result">{{ getResult(num) }}</span>
+            </td>
+          </tr>
+        </tbody>
+      </table>
     </section>
 
     <!-- 连跳统计 -->
     <section class="card">
       <h2>连跳统计</h2>
       <p class="hint">
-        <span class="legend-item"><span class="tag lian">连</span> 上一局与当前局结果相同</span>
-        <span class="legend-item"><span class="tag tiao">跳</span> 上一局与当前局结果不同</span>
+        <span class="legend-item"><span class="tag lian">连</span> 与所在行左侧节点结果相同</span>
+        <span class="legend-item"><span class="tag tiao">跳</span> 与所在行左侧节点结果不同</span>
+        （前5局不参与统计）
       </p>
-      <div class="scroll-wrapper">
-        <table class="matrix-table stats-table">
-          <thead>
-            <tr>
-              <th v-for="c in COLS" :key="'sh' + c" class="col-header">{{ c }}</th>
-            </tr>
-          </thead>
-          <tbody>
-            <tr>
-              <td v-for="(colStats, c) in mergedStats" :key="'sc' + c" class="stat-cell">
-                <div v-if="colStats.length === 0" class="no-stat">-</div>
-                <div v-else class="stat-list">
-                  <span v-for="(item, idx) in colStats" :key="idx"
-                    class="stat-tag" :class="item.type">
-                    {{ item.type }}{{ item.count }}
-                  </span>
-                </div>
-              </td>
-            </tr>
-          </tbody>
-        </table>
+      <div v-if="mergedRuns.length === 0" class="no-stat">-</div>
+      <div v-else class="runs-grid">
+        <span v-for="(run, idx) in mergedRuns" :key="idx"
+          class="run-chip" :class="run.type === '\u8fde' ? 'lian' : 'tiao'">{{ run.count }}</span>
       </div>
     </section>
 
@@ -301,49 +309,41 @@ const count2 = computed(() => results.value.filter(r => r === 2).length)
 }
 
 /* 矩阵 */
-.scroll-wrapper {
-  overflow-x: auto;
-  -webkit-overflow-scrolling: touch;
-}
 .matrix-table {
   border-collapse: collapse;
   table-layout: fixed;
   width: 100%;
+  max-width: 560px;
+  margin: 0 auto;
 }
-.matrix-table th,
 .matrix-table td {
   border: 1px solid #e0e0e0;
   text-align: center;
-  width: 56px;
-  min-width: 56px;
-  max-width: 56px;
-}
-.col-header {
-  background: #f5f7fa;
-  color: #888;
-  font-size: 11px;
-  font-weight: 600;
-  height: 24px;
   padding: 0;
 }
 .cell {
-  height: 38px;
-  padding: 0;
+  height: 36px;
   background: #fafafa;
   position: relative;
+  cursor: pointer;
+  user-select: none;
+  transition: filter 0.1s;
 }
+.cell:hover { background: #eef2f7; }
+.cell.has-result:hover { filter: brightness(0.92); }
+.cell:active { transform: scale(0.94); }
 .cell.has-result { font-weight: 600; }
 .num {
-  font-size: 10px;
-  color: #bbb;
+  font-size: 8px;
+  color: #000;
   position: absolute;
-  top: 2px;
+  top: 1px;
   left: 50%;
   transform: translateX(-50%);
+  line-height: 1;
 }
-.cell.has-result .num { color: rgba(255,255,255,0.6); }
 .result {
-  font-size: 15px;
+  font-size: 13px;
   font-weight: 700;
 }
 
@@ -355,29 +355,28 @@ const count2 = computed(() => results.value.filter(r => r === 2).length)
 }
 
 /* 统计 */
-.stat-cell {
-  height: auto;
-  min-height: 36px;
-  padding: 4px 3px;
-  vertical-align: top;
+.runs-grid {
+  display: grid;
+  grid-template-columns: repeat(16, 1fr);
+  gap: 3px;
 }
-.stat-list {
+.run-chip {
   display: flex;
-  flex-direction: column;
-  gap: 2px;
   align-items: center;
+  justify-content: center;
+  height: 22px;
+  border-radius: 4px;
+  font-size: 12px;
+  font-weight: 700;
+  color: #fff;
 }
-.stat-tag {
-  display: inline-block;
-  padding: 1px 5px;
-  border-radius: 3px;
-  font-size: 10px;
-  font-weight: 600;
-  white-space: nowrap;
+.run-chip.lian { background: #e74c3c; }
+.run-chip.tiao { background: #3498db; }
+.no-stat {
+  color: #ccc;
+  font-size: 13px;
+  text-align: center;
 }
-.stat-tag.lian { background: #e74c3c; color: #fff; }
-.stat-tag.tiao { background: #3498db; color: #fff; }
-.no-stat { color: #ccc; font-size: 13px; }
 
 /* 图例 */
 .legend-item {
